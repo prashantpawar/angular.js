@@ -1364,6 +1364,22 @@ describe('$compile', function() {
           });
         });
 
+        it('should ignore whitespace betwee comment and root node when replacing with a template', function() {
+          module(function() {
+            directive('replaceWithWhitespace', valueFn({
+              replace: true,
+              template: '<!-- ignored comment --> <p>Hello, world!</p> <!-- ignored comment-->'
+            }));
+          });
+          inject(function($compile, $rootScope) {
+            expect(function() {
+              element = $compile('<div><div replace-with-whitespace></div></div>')($rootScope);
+            }).not.toThrow();
+            expect(element.find('p').length).toBe(1);
+            expect(element.find('p').text()).toBe('Hello, world!');
+          });
+        });
+
         it('should keep prototype properties on directive', function() {
           module(function() {
             function DirectiveClass() {
@@ -2092,6 +2108,18 @@ describe('$compile', function() {
             $compile('<p template></p>');
             $rootScope.$apply();
             expect($exceptionHandler.errors).toEqual([]);
+
+            // comments are ok
+            $templateCache.put('template.html', '<!-- oh hi --><div></div> \n');
+            $compile('<p template></p>');
+            $rootScope.$apply();
+            expect($exceptionHandler.errors).toEqual([]);
+
+            // white space around comments is ok
+            $templateCache.put('template.html', '  <!-- oh hi -->  <div></div>  <!-- oh hi -->\n');
+            $compile('<p template></p>');
+            $rootScope.$apply();
+            expect($exceptionHandler.errors).toEqual([]);
           });
         });
 
@@ -2302,6 +2330,26 @@ describe('$compile', function() {
             expect(element.find('p').text()).toBe('Hello, world!');
           });
         });
+
+        it('should ignore whitespace between comment and root node when replacing with a templateUrl', function() {
+          module(function() {
+            directive('replaceWithWhitespace', valueFn({
+              replace: true,
+              templateUrl: 'templateWithWhitespace.html'
+            }));
+          });
+          inject(function($compile, $rootScope, $httpBackend) {
+            $httpBackend.whenGET('templateWithWhitespace.html').
+              respond('<!-- ignored comment --> <p>Hello, world!</p> <!-- ignored comment-->');
+            expect(function() {
+              element = $compile('<div><div replace-with-whitespace></div></div>')($rootScope);
+            }).not.toThrow();
+            $httpBackend.flush();
+            expect(element.find('p').length).toBe(1);
+            expect(element.find('p').text()).toBe('Hello, world!');
+          });
+        });
+
 
         it('should keep prototype properties on sync version of async directive', function() {
           module(function() {
@@ -5476,7 +5524,7 @@ describe('$compile', function() {
                 expect($rootScope.name).toEqual('outer');
                 expect(component.input).toEqual('$onInit');
 
-                $rootScope.$apply();
+                $rootScope.$digest();
 
                 expect($rootScope.name).toEqual('outer');
                 expect(component.input).toEqual('$onInit');
@@ -5485,6 +5533,37 @@ describe('$compile', function() {
                   'constructor',
                   ['$onChanges', jasmine.objectContaining({ currentValue: 'outer' })],
                   '$onInit'
+                ]);
+              });
+            });
+
+            it('should not update isolate again after $onInit if outer is a literal', function() {
+              module('owComponentTest');
+              inject(function() {
+                $rootScope.name = 'outer';
+                compile('<ow-component input="[name]"></ow-component>');
+
+                expect(component.input).toEqual('$onInit');
+
+                // No outer change
+                $rootScope.$apply('name = "outer"');
+                expect(component.input).toEqual('$onInit');
+
+                // Outer change
+                $rootScope.$apply('name = "re-outer"');
+                expect(component.input).toEqual(['re-outer']);
+
+                expect(log).toEqual([
+                  'constructor',
+                  [
+                    '$onChanges',
+                    jasmine.objectContaining({currentValue: ['outer']})
+                  ],
+                  '$onInit',
+                  [
+                    '$onChanges',
+                    jasmine.objectContaining({previousValue: ['outer'], currentValue: ['re-outer']})
+                  ]
                 ]);
               });
             });
@@ -6126,154 +6205,113 @@ describe('$compile', function() {
         });
 
 
-        it('should throw noident when missing controllerAs directive property', function() {
-          module(function($compileProvider) {
-            $compileProvider.directive('noIdent', valueFn({
-              templateUrl: 'test.html',
-              scope: {
-                'data': '=dirData',
-                'oneway': '<dirData',
-                'str': '@dirStr',
-                'fn': '&dirFn'
-              },
-              controller: function() {},
-              bindToController: true
-            }));
-          });
-          inject(function($compile, $rootScope) {
-            expect(function() {
-              $compile('<div no-ident>')($rootScope);
-            }).toThrowMinErr('$compile', 'noident',
-            'Cannot bind to controller without identifier for directive \'noIdent\'.');
-          });
-        });
-
-
-        it('should throw noident when missing controller identifier', function() {
-          module(function($compileProvider, $controllerProvider) {
-            $controllerProvider.register('myCtrl', function() {});
-            $compileProvider.directive('noIdent', valueFn({
-              templateUrl: 'test.html',
-              scope: {
-                'data': '=dirData',
-                'oneway': '<dirData',
-                'str': '@dirStr',
-                'fn': '&dirFn'
-              },
+        describe('should bind to controller via object notation', function() {
+          var controllerOptions = [{
+              description: 'no controller identifier',
+              controller: 'myCtrl'
+            }, {
+              description: '"Ctrl as ident" syntax',
+              controller: 'myCtrl as myCtrl'
+            }, {
+              description: 'controllerAs setting',
               controller: 'myCtrl',
-              bindToController: true
-            }));
-          });
-          inject(function($compile, $rootScope) {
-            expect(function() {
-              $compile('<div no-ident>')($rootScope);
-            }).toThrowMinErr('$compile', 'noident',
-            'Cannot bind to controller without identifier for directive \'noIdent\'.');
-          });
-        });
+              controllerAs: 'myCtrl'
+            }],
 
+            scopeOptions = [{
+              description: 'isolate scope',
+              scope: {}
+            }, {
+              description: 'new scope',
+              scope: true
+            }, {
+              description: 'no scope',
+              scope: false
+            }],
 
-        it('should bind to controller via object notation (isolate scope)', function() {
-          var controllerCalled = false;
-          module(function($compileProvider, $controllerProvider) {
-            $controllerProvider.register('myCtrl', function() {
-              this.check = function() {
-                expect(this.data).toEqualData({
-                  'foo': 'bar',
-                  'baz': 'biz'
+            templateOptions = [{
+              description: 'inline template',
+              template: '<p>template</p>'
+            }, {
+              description: 'templateUrl setting',
+              templateUrl: 'test.html'
+            }, {
+              description: 'no template'
+            }];
+
+          forEach(controllerOptions, function(controllerOption) {
+            forEach(scopeOptions, function(scopeOption) {
+              forEach(templateOptions, function(templateOption) {
+
+                var description = [],
+                  ddo = {
+                    bindToController: {
+                      'data': '=dirData',
+                      'oneway': '<dirData',
+                      'str': '@dirStr',
+                      'fn': '&dirFn'
+                    }
+                  };
+
+                forEach([controllerOption, scopeOption, templateOption], function(option) {
+                  description.push(option.description);
+                  delete option.description;
+                  extend(ddo, option);
                 });
-                expect(this.oneway).toEqualData({
-                  'foo': 'bar',
-                  'baz': 'biz'
+
+                it('(' + description.join(', ') + ')', function() {
+                  var controllerCalled = false;
+                  module(function($compileProvider, $controllerProvider) {
+                    $controllerProvider.register('myCtrl', function() {
+                      this.check = function() {
+                        expect(this.data).toEqualData({
+                          'foo': 'bar',
+                          'baz': 'biz'
+                        });
+                        expect(this.oneway).toEqualData({
+                          'foo': 'bar',
+                          'baz': 'biz'
+                        });
+                        expect(this.str).toBe('Hello, world!');
+                        expect(this.fn()).toBe('called!');
+                      };
+                      controllerCalled = true;
+                      if (preAssignBindingsEnabled) {
+                        this.check();
+                      } else {
+                        this.$onInit = this.check;
+                      }
+                    });
+                    $compileProvider.directive('fooDir', valueFn(ddo));
+                  });
+                  inject(function($compile, $rootScope, $templateCache) {
+                    $templateCache.put('test.html', '<p>template</p>');
+                    $rootScope.fn = valueFn('called!');
+                    $rootScope.whom = 'world';
+                    $rootScope.remoteData = {
+                      'foo': 'bar',
+                      'baz': 'biz'
+                    };
+                    element = $compile('<div foo-dir dir-data="remoteData" ' +
+                                      'dir-str="Hello, {{whom}}!" ' +
+                                      'dir-fn="fn()"></div>')($rootScope);
+                    $rootScope.$digest();
+                    expect(controllerCalled).toBe(true);
+                    if (ddo.controllerAs || ddo.controller.indexOf(' as ') !== -1) {
+                      if (ddo.scope) {
+                        expect($rootScope.myCtrl).toBeUndefined();
+                      } else {
+                        // The controller identifier was added to the containing scope.
+                        expect($rootScope.myCtrl).toBeDefined();
+                      }
+                    }
+                  });
                 });
-                expect(this.str).toBe('Hello, world!');
-                expect(this.fn()).toBe('called!');
-              };
-              controllerCalled = true;
-              if (preAssignBindingsEnabled) {
-                this.check();
-              } else {
-                this.$onInit = this.check;
-              }
+
+              });
             });
-            $compileProvider.directive('fooDir', valueFn({
-              templateUrl: 'test.html',
-              bindToController: {
-                'data': '=dirData',
-                'oneway': '<dirData',
-                'str': '@dirStr',
-                'fn': '&dirFn'
-              },
-              scope: {},
-              controller: 'myCtrl as myCtrl'
-            }));
           });
-          inject(function($compile, $rootScope, $templateCache) {
-            $templateCache.put('test.html', '<p>isolate</p>');
-            $rootScope.fn = valueFn('called!');
-            $rootScope.whom = 'world';
-            $rootScope.remoteData = {
-              'foo': 'bar',
-              'baz': 'biz'
-            };
-            element = $compile('<div foo-dir dir-data="remoteData" ' +
-                              'dir-str="Hello, {{whom}}!" ' +
-                              'dir-fn="fn()"></div>')($rootScope);
-            $rootScope.$digest();
-            expect(controllerCalled).toBe(true);
-          });
-        });
 
-
-        it('should bind to controller via object notation (new scope)', function() {
-          var controllerCalled = false;
-          module(function($compileProvider, $controllerProvider) {
-            $controllerProvider.register('myCtrl', function() {
-              this.check = function() {
-                expect(this.data).toEqualData({
-                  'foo': 'bar',
-                  'baz': 'biz'
-                });
-                expect(this.data).toEqualData({
-                  'foo': 'bar',
-                  'baz': 'biz'
-                });
-                expect(this.str).toBe('Hello, world!');
-                expect(this.fn()).toBe('called!');
-              };
-              controllerCalled = true;
-              if (preAssignBindingsEnabled) {
-                this.check();
-              } else {
-                this.$onInit = this.check;
-              }
-            });
-            $compileProvider.directive('fooDir', valueFn({
-              templateUrl: 'test.html',
-              bindToController: {
-                'data': '=dirData',
-                'oneway': '<dirData',
-                'str': '@dirStr',
-                'fn': '&dirFn'
-              },
-              scope: true,
-              controller: 'myCtrl as myCtrl'
-            }));
-          });
-          inject(function($compile, $rootScope, $templateCache) {
-            $templateCache.put('test.html', '<p>isolate</p>');
-            $rootScope.fn = valueFn('called!');
-            $rootScope.whom = 'world';
-            $rootScope.remoteData = {
-              'foo': 'bar',
-              'baz': 'biz'
-            };
-            element = $compile('<div foo-dir dir-data="remoteData" ' +
-                              'dir-str="Hello, {{whom}}!" ' +
-                              'dir-fn="fn()"></div>')($rootScope);
-            $rootScope.$digest();
-            expect(controllerCalled).toBe(true);
-          });
         });
 
 
@@ -8680,6 +8718,60 @@ describe('$compile', function() {
             });
           });
 
+          it('should compile and link the fallback content if only whitespace transcluded content is provided', function() {
+            var linkSpy = jasmine.createSpy('postlink');
+
+            module(function() {
+              directive('inner', function() {
+                return {
+                  restrict: 'E',
+                  template: 'old stuff! ',
+                  link: linkSpy
+                };
+              });
+
+              directive('trans', function() {
+                return {
+                  transclude: true,
+                  template: '<div ng-transclude><inner></inner></div>'
+                };
+              });
+            });
+            inject(function(log, $rootScope, $compile) {
+              element = $compile('<div trans>\n  \n</div>')($rootScope);
+              $rootScope.$apply();
+              expect(sortedHtml(element.html())).toEqual('<div ng-transclude=""><inner>old stuff! </inner></div>');
+              expect(linkSpy).toHaveBeenCalled();
+            });
+          });
+
+          it('should not link the fallback content if only whitespace and comments are provided as transclude content', function() {
+            var linkSpy = jasmine.createSpy('postlink');
+
+            module(function() {
+              directive('inner', function() {
+                return {
+                  restrict: 'E',
+                  template: 'old stuff! ',
+                  link: linkSpy
+                };
+              });
+
+              directive('trans', function() {
+                return {
+                  transclude: true,
+                  template: '<div ng-transclude><inner></inner></div>'
+                };
+              });
+            });
+            inject(function(log, $rootScope, $compile) {
+              element = $compile('<div trans>\n<!-- some comment -->  \n</div>')($rootScope);
+              $rootScope.$apply();
+              expect(sortedHtml(element.html())).toEqual('<div ng-transclude="">\n<!-- some comment -->  \n</div>');
+              expect(linkSpy).not.toHaveBeenCalled();
+            });
+          });
+
           it('should compile and link the fallback content if an optional transclusion slot is not provided', function() {
             var linkSpy = jasmine.createSpy('postlink');
 
@@ -11059,8 +11151,7 @@ describe('$compile', function() {
   }
 
   describe('ngAttr* attribute binding', function() {
-
-    it('should bind after digest but not before', inject(function($compile, $rootScope) {
+    it('should bind after digest but not before', inject(function() {
       $rootScope.name = 'Misko';
       element = $compile('<span ng-attr-test="{{name}}"></span>')($rootScope);
       expect(element.attr('test')).toBeUndefined();
@@ -11068,7 +11159,7 @@ describe('$compile', function() {
       expect(element.attr('test')).toBe('Misko');
     }));
 
-    it('should bind after digest but not before when after overridden attribute', inject(function($compile, $rootScope) {
+    it('should bind after digest but not before when after overridden attribute', inject(function() {
       $rootScope.name = 'Misko';
       element = $compile('<span test="123" ng-attr-test="{{name}}"></span>')($rootScope);
       expect(element.attr('test')).toBe('123');
@@ -11076,7 +11167,7 @@ describe('$compile', function() {
       expect(element.attr('test')).toBe('Misko');
     }));
 
-    it('should bind after digest but not before when before overridden attribute', inject(function($compile, $rootScope) {
+    it('should bind after digest but not before when before overridden attribute', inject(function() {
       $rootScope.name = 'Misko';
       element = $compile('<span ng-attr-test="{{name}}" test="123"></span>')($rootScope);
       expect(element.attr('test')).toBe('123');
@@ -11084,7 +11175,15 @@ describe('$compile', function() {
       expect(element.attr('test')).toBe('Misko');
     }));
 
-    it('should remove attribute if any bindings are undefined', inject(function($compile, $rootScope) {
+    it('should set the attribute (after digest) even if there is no interpolation', inject(function() {
+      element = $compile('<span ng-attr-test="foo"></span>')($rootScope);
+      expect(element.attr('test')).toBeUndefined();
+
+      $rootScope.$digest();
+      expect(element.attr('test')).toBe('foo');
+    }));
+
+    it('should remove attribute if any bindings are undefined', inject(function() {
       element = $compile('<span ng-attr-test="{{name}}{{emphasis}}"></span>')($rootScope);
       $rootScope.$digest();
       expect(element.attr('test')).toBeUndefined();
@@ -11097,6 +11196,8 @@ describe('$compile', function() {
     }));
 
     describe('in directive', function() {
+      var log;
+
       beforeEach(module(function() {
         directive('syncTest', function(log) {
           return {
@@ -11117,47 +11218,52 @@ describe('$compile', function() {
         });
       }));
 
-      beforeEach(inject(function($templateCache) {
+      beforeEach(inject(function($templateCache, _log_) {
+        log = _log_;
         $templateCache.put('async.html', '<h1>Test</h1>');
       }));
 
       it('should provide post-digest value in synchronous directive link functions when after overridden attribute',
-          inject(function(log, $rootScope, $compile) {
-        $rootScope.test = 'TEST';
-        element = $compile('<div sync-test test="123" ng-attr-test="{{test}}"></div>')($rootScope);
-        expect(element.attr('test')).toBe('123');
-        expect(log.toArray()).toEqual(['TEST', 'TEST']);
-      }));
+        function() {
+          $rootScope.test = 'TEST';
+          element = $compile('<div sync-test test="123" ng-attr-test="{{test}}"></div>')($rootScope);
+          expect(element.attr('test')).toBe('123');
+          expect(log.toArray()).toEqual(['TEST', 'TEST']);
+        }
+      );
 
       it('should provide post-digest value in synchronous directive link functions when before overridden attribute',
-          inject(function(log, $rootScope, $compile) {
-        $rootScope.test = 'TEST';
-        element = $compile('<div sync-test ng-attr-test="{{test}}" test="123"></div>')($rootScope);
-        expect(element.attr('test')).toBe('123');
-        expect(log.toArray()).toEqual(['TEST', 'TEST']);
-      }));
+        function() {
+          $rootScope.test = 'TEST';
+          element = $compile('<div sync-test ng-attr-test="{{test}}" test="123"></div>')($rootScope);
+          expect(element.attr('test')).toBe('123');
+          expect(log.toArray()).toEqual(['TEST', 'TEST']);
+        }
+      );
 
 
       it('should provide post-digest value in asynchronous directive link functions when after overridden attribute',
-          inject(function(log, $rootScope, $compile) {
-        $rootScope.test = 'TEST';
-        element = $compile('<div async-test test="123" ng-attr-test="{{test}}"></div>')($rootScope);
-        expect(element.attr('test')).toBe('123');
-        $rootScope.$digest();
-        expect(log.toArray()).toEqual(['TEST', 'TEST']);
-      }));
+        function() {
+          $rootScope.test = 'TEST';
+          element = $compile('<div async-test test="123" ng-attr-test="{{test}}"></div>')($rootScope);
+          expect(element.attr('test')).toBe('123');
+          $rootScope.$digest();
+          expect(log.toArray()).toEqual(['TEST', 'TEST']);
+        }
+      );
 
       it('should provide post-digest value in asynchronous directive link functions when before overridden attribute',
-          inject(function(log, $rootScope, $compile) {
-        $rootScope.test = 'TEST';
-        element = $compile('<div async-test ng-attr-test="{{test}}" test="123"></div>')($rootScope);
-        expect(element.attr('test')).toBe('123');
-        $rootScope.$digest();
-        expect(log.toArray()).toEqual(['TEST', 'TEST']);
-      }));
+        function() {
+          $rootScope.test = 'TEST';
+          element = $compile('<div async-test ng-attr-test="{{test}}" test="123"></div>')($rootScope);
+          expect(element.attr('test')).toBe('123');
+          $rootScope.$digest();
+          expect(log.toArray()).toEqual(['TEST', 'TEST']);
+        }
+      );
     });
 
-    it('should work with different prefixes', inject(function($compile, $rootScope) {
+    it('should work with different prefixes', inject(function() {
       $rootScope.name = 'Misko';
       element = $compile('<span ng:attr:test="{{name}}" ng-Attr-test2="{{name}}" ng_Attr_test3="{{name}}"></span>')($rootScope);
       expect(element.attr('test')).toBeUndefined();
@@ -11169,14 +11275,14 @@ describe('$compile', function() {
       expect(element.attr('test3')).toBe('Misko');
     }));
 
-    it('should work with the "href" attribute', inject(function($compile, $rootScope) {
+    it('should work with the "href" attribute', inject(function() {
       $rootScope.value = 'test';
       element = $compile('<a ng-attr-href="test/{{value}}"></a>')($rootScope);
       $rootScope.$digest();
       expect(element.attr('href')).toBe('test/test');
     }));
 
-    it('should work if they are prefixed with x- or data- and different prefixes', inject(function($compile, $rootScope) {
+    it('should work if they are prefixed with x- or data- and different prefixes', inject(function() {
       $rootScope.name = 'Misko';
       element = $compile('<span data-ng-attr-test2="{{name}}" x-ng-attr-test3="{{name}}" data-ng:attr-test4="{{name}}" ' +
         'x_ng-attr-test5="{{name}}" data:ng-attr-test6="{{name}}"></span>')($rootScope);
@@ -11194,8 +11300,7 @@ describe('$compile', function() {
     }));
 
     describe('when an attribute has a dash-separated name', function() {
-
-      it('should work with different prefixes', inject(function($compile, $rootScope) {
+      it('should work with different prefixes', inject(function() {
         $rootScope.name = 'JamieMason';
         element = $compile('<span ng:attr:dash-test="{{name}}" ng-Attr-dash-test2="{{name}}" ng_Attr_dash-test3="{{name}}"></span>')($rootScope);
         expect(element.attr('dash-test')).toBeUndefined();
@@ -11207,7 +11312,7 @@ describe('$compile', function() {
         expect(element.attr('dash-test3')).toBe('JamieMason');
       }));
 
-      it('should work if they are prefixed with x- or data-', inject(function($compile, $rootScope) {
+      it('should work if they are prefixed with x- or data-', inject(function() {
         $rootScope.name = 'JamieMason';
         element = $compile('<span data-ng-attr-dash-test2="{{name}}" x-ng-attr-dash-test3="{{name}}" data-ng:attr-dash-test4="{{name}}"></span>')($rootScope);
         expect(element.attr('dash-test2')).toBeUndefined();
@@ -11236,7 +11341,6 @@ describe('$compile', function() {
         });
       });
 
-
       it('should keep attributes ending with -end single-element directives', function() {
         module(function($compileProvider) {
           $compileProvider.directive('dashEnder', function(log) {
@@ -11254,7 +11358,6 @@ describe('$compile', function() {
         });
       });
     });
-
   });
 
 
